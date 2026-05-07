@@ -47,7 +47,7 @@ Usage is tracked locally in `.pi-usage.json` for requests made through this Tele
 
 ## Safety Model
 
-Only Telegram user IDs listed in `OWNER_TELEGRAM_IDS` can use the bot. Most tools are explicit TypeScript functions under `src/tools/`. The `execute_command` tool can run arbitrary shell commands, but only after the Telegram user approves the exact command with `yes`/`no` or `/yes`/`/no`.
+Only Telegram user IDs listed in `OWNER_TELEGRAM_IDS` can use the bot. Most tools are explicit TypeScript functions under `src/tools/`. The `execute_command` tool can run arbitrary shell commands, but only after the Telegram user approves the exact command with `yes`/`no` or `/yes`/`/no`. The `download_torrent` tool uses `aria2c` to download magnet links or `.torrent` files after the same explicit approval flow; it defaults to `/home/koushikk/MANGA` as the download directory. Only use it for content you have rights to download.
 
 Each Telegram chat gets its own agent session and current directory. The current directory starts as the directory where `npm run dev` was launched. The agent can use `change_directory` to move into child directories, parent directories like `..`, sibling projects, or absolute paths.
 
