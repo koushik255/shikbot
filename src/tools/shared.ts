@@ -2,6 +2,7 @@ import path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 
 export type SessionToolState = {
+  chatId: number;
   cwd: string;
 };
 

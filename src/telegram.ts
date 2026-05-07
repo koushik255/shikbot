@@ -1,6 +1,7 @@
 import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 import { askAgent, resetAgent } from "./agent.js";
+import { resolveApprovalFromText, setApprovalNotifier } from "./approvals.js";
 import { config } from "./config.js";
 import { formatCodexAccountUsageReport } from "./codex-account.js";
 import { formatUsageReport } from "./usage.js";
@@ -19,6 +20,10 @@ export async function replyInChunks(reply: (text: string) => Promise<unknown>, t
 
 export function createTelegramBot(): Telegraf {
   const bot = new Telegraf(config.telegramBotToken);
+
+  setApprovalNotifier(async (chatId, approvalMessage) => {
+    await replyInChunks((text) => bot.telegram.sendMessage(chatId, text), approvalMessage);
+  });
 
   bot.use(async (ctx, next) => {
     if (!isAllowedUser(ctx.from?.id)) {
@@ -59,6 +64,16 @@ export function createTelegramBot(): Telegraf {
     }
   });
 
+  bot.command("yes", async (ctx) => {
+    const decision = resolveApprovalFromText(ctx.chat.id, "/yes");
+    await ctx.reply(decision === "approved" ? "Approved." : "No pending approval for this chat.");
+  });
+
+  bot.command("no", async (ctx) => {
+    const decision = resolveApprovalFromText(ctx.chat.id, "/no");
+    await ctx.reply(decision === "denied" ? "Denied." : "No pending approval for this chat.");
+  });
+
   bot.command("ask", async (ctx) => {
     const prompt = ctx.message.text.replace(/^\/ask(@\w+)?\s*/u, "").trim();
 
@@ -73,6 +88,12 @@ export function createTelegramBot(): Telegraf {
   });
 
   bot.on(message("text"), async (ctx) => {
+    const approvalDecision = resolveApprovalFromText(ctx.chat.id, ctx.message.text);
+    if (approvalDecision) {
+      await ctx.reply(approvalDecision === "approved" ? "Approved." : "Denied.");
+      return;
+    }
+
     await ctx.sendChatAction("typing");
     const response = await askAgent(ctx.chat.id, ctx.message.text);
     await replyInChunks((text) => ctx.reply(text), response);

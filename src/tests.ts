@@ -13,6 +13,7 @@ process.env.PI_PROVIDER = "openai";
 process.env.PI_MODEL = "gpt-5-mini";
 process.env.PI_THINKING_LEVEL = "medium";
 
+const approvals = await import("./approvals.js");
 const auth = await import("./auth.js");
 const usage = await import("./usage.js");
 const telegram = await import("./telegram.js");
@@ -81,6 +82,19 @@ test("recordUsageFromMessage tracks assistant usage", () => {
   assert.equal(totals.output, 50);
   assert.equal(totals.totalTokens, 180);
   assert.equal(totals.cost.total, 0.0033);
+});
+
+test("approval flow resolves yes/no responses", async () => {
+  const approvalPromise = approvals.requestCommandApproval(123, "echo hello", tempDir);
+
+  assert.equal(approvals.hasPendingApproval(123), true);
+  assert.equal(approvals.resolveApprovalFromText(123, "yes"), "approved");
+  assert.equal(await approvalPromise, true);
+  assert.equal(approvals.hasPendingApproval(123), false);
+
+  const deniedPromise = approvals.requestCommandApproval(123, "echo nope", tempDir);
+  assert.equal(approvals.resolveApprovalFromText(123, "/no"), "denied");
+  assert.equal(await deniedPromise, false);
 });
 
 test("isAllowedUser accepts only configured Telegram owner IDs", () => {

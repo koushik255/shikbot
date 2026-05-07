@@ -22,6 +22,7 @@ const sessions = new Map<number, Session>();
 
 function createAgent(chatId: number): Session {
   const toolState: SessionToolState = {
+    chatId,
     cwd: process.cwd()
   };
 

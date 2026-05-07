@@ -41,11 +41,13 @@ Usage is tracked locally in `.pi-usage.json` for requests made through this Tele
 - `/ask <message>` sends a prompt to the agent.
 - `/reset` resets the current Telegram chat's in-memory agent session.
 - `/usage` shows Codex account rate-limit usage from the Codex app-server, plus locally tracked token/cost usage for this bot.
-- Any normal text message is also treated as an agent prompt.
+- `/yes` approves a pending agent command execution request.
+- `/no` denies a pending agent command execution request.
+- Any normal text message is also treated as an agent prompt. If a command approval is pending, replying `yes` or `no` resolves it instead.
 
 ## Safety Model
 
-Only Telegram user IDs listed in `OWNER_TELEGRAM_IDS` can use the bot. Tool execution is intentionally conservative in the first version. Expand `src/tools.ts` with new structured tools as needed instead of letting the model run arbitrary shell commands.
+Only Telegram user IDs listed in `OWNER_TELEGRAM_IDS` can use the bot. Most tools are explicit TypeScript functions under `src/tools/`. The `execute_command` tool can run arbitrary shell commands, but only after the Telegram user approves the exact command with `yes`/`no` or `/yes`/`/no`.
 
 Each Telegram chat gets its own agent session and current directory. The current directory starts as the directory where `npm run dev` was launched. The agent can use `change_directory` to move into child directories, parent directories like `..`, sibling projects, or absolute paths.
 
