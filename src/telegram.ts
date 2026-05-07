@@ -4,6 +4,7 @@ import { askAgent, resetAgent } from "./agent.js";
 import { resolveApprovalFromText, setApprovalNotifier } from "./approvals.js";
 import { config } from "./config.js";
 import { formatCodexAccountUsageReport } from "./codex-account.js";
+import { downloadTorrent, formatDownloadTorrentResult } from "./tools/download-torrent.js";
 import { formatUsageReport } from "./usage.js";
 
 export function isAllowedUser(userId: number | undefined): boolean {
@@ -40,7 +41,7 @@ export function createTelegramBot(): Telegraf {
   });
 
   bot.start(async (ctx) => {
-    await ctx.reply("Pi core agent bot is online. Send a message, use /ask <prompt>, /usage, or /reset.");
+    await ctx.reply("Pi core agent bot is online. Send a message, use /ask <prompt>, /torrent <magnet-or-torrent-url>, /usage, or /reset.");
   });
 
   bot.command("reset", async (ctx) => {
@@ -60,6 +61,28 @@ export function createTelegramBot(): Telegraf {
       await replyInChunks(
         (text) => ctx.reply(text),
         `Could not read Codex account usage.\n\n${error instanceof Error ? error.message : String(error)}\n\n${formatUsageReport(config.piProvider)}`
+      );
+    }
+  });
+
+  bot.command("torrent", async (ctx) => {
+    const uri = ctx.message.text.replace(/^\/torrent(@\w+)?\s*/u, "").trim();
+
+    if (!uri) {
+      await ctx.reply("Usage: /torrent <magnet link | .torrent URL | local .torrent path>");
+      return;
+    }
+
+    await ctx.reply("Starting torrent download with aria2c...");
+    await ctx.sendChatAction("typing");
+
+    try {
+      const result = await downloadTorrent({ uri, cwd: process.cwd() });
+      await replyInChunks((text) => ctx.reply(text), formatDownloadTorrentResult(result));
+    } catch (error) {
+      await replyInChunks(
+        (text) => ctx.reply(text),
+        `Torrent download failed:\n${error instanceof Error ? error.message : String(error)}`
       );
     }
   });

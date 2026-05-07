@@ -22,7 +22,9 @@ const downloadTorrentSchema = Type.Object({
 
 type DownloadTorrentParams = Static<typeof downloadTorrentSchema>;
 
-type DownloadTorrentResult = {
+export const defaultTorrentDownloadDirectory = "/home/koushikk/MANGA";
+
+export type DownloadTorrentResult = {
   uri: string;
   outputDirectory: string;
   exitCode: number | null;
@@ -38,7 +40,7 @@ function truncateOutput(text: string): string {
   return `${text.slice(0, maxOutputChars)}\n\n[output truncated after ${maxOutputChars} characters]`;
 }
 
-function validateTorrentUri(uri: string): void {
+export function validateTorrentUri(uri: string): void {
   if (uri.startsWith("magnet:?xt=urn:btih:")) return;
 
   if (uri.endsWith(".torrent")) return;
@@ -127,7 +129,7 @@ async function runAria2c(
   });
 }
 
-function formatResult(result: DownloadTorrentResult): string {
+export function formatDownloadTorrentResult(result: DownloadTorrentResult): string {
   return [
     "Torrent download finished.",
     `URI: ${result.uri}`,
@@ -140,6 +142,26 @@ function formatResult(result: DownloadTorrentResult): string {
     "stderr:",
     result.stderr || "(empty)"
   ].join("\n");
+}
+
+export async function downloadTorrent(input: {
+  uri: string;
+  outputDirectory?: string;
+  seedTimeMinutes?: number;
+  timeoutMinutes?: number;
+  cwd?: string;
+  signal?: AbortSignal;
+}): Promise<DownloadTorrentResult> {
+  validateTorrentUri(input.uri);
+
+  const outputDirectory = input.outputDirectory
+    ? resolveFromCwd(input.cwd ?? process.cwd(), input.outputDirectory)
+    : defaultTorrentDownloadDirectory;
+  const seedTimeMinutes = Math.max(0, Math.min(input.seedTimeMinutes ?? 0, 10_080));
+  const timeoutMinutes = Math.max(1, Math.min(input.timeoutMinutes ?? 120, 1_440));
+
+  await mkdir(outputDirectory, { recursive: true });
+  return await runAria2c(input.uri, outputDirectory, seedTimeMinutes, timeoutMinutes, input.signal);
 }
 
 export function createDownloadTorrentTool(state: SessionToolState): AgentTool {
@@ -155,7 +177,7 @@ export function createDownloadTorrentTool(state: SessionToolState): AgentTool {
 
       const outputDirectory = input.outputDirectory
         ? resolveFromCwd(state.cwd, input.outputDirectory)
-        : "/home/koushikk/MANGA";
+        : defaultTorrentDownloadDirectory;
       const seedTimeMinutes = Math.max(0, Math.min(input.seedTimeMinutes ?? 0, 10_080));
       const timeoutMinutes = Math.max(1, Math.min(input.timeoutMinutes ?? 120, 1_440));
       const preview = buildPreviewCommand(input.uri, outputDirectory, seedTimeMinutes);
@@ -165,11 +187,17 @@ export function createDownloadTorrentTool(state: SessionToolState): AgentTool {
         return textResult(`User denied torrent download: ${input.uri}`);
       }
 
-      await mkdir(outputDirectory, { recursive: true });
-      const result = await runAria2c(input.uri, outputDirectory, seedTimeMinutes, timeoutMinutes, signal);
+      const result = await downloadTorrent({
+        uri: input.uri,
+        outputDirectory: input.outputDirectory,
+        seedTimeMinutes,
+        timeoutMinutes,
+        cwd: state.cwd,
+        signal
+      });
 
       return {
-        ...textResult(formatResult(result)),
+        ...textResult(formatDownloadTorrentResult(result)),
         details: result
       };
     },
