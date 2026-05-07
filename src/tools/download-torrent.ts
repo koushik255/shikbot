@@ -10,7 +10,7 @@ const downloadTorrentSchema = Type.Object({
     description: "Magnet URI, local .torrent path, or http(s) URL to a .torrent file. Only use for content the user has rights to download."
   }),
   outputDirectory: Type.Optional(Type.String({
-    description: "Directory to save files into. Relative paths are resolved against the current agent directory. Defaults to /home/koushikk/MANGA."
+    description: "Directory to save files into. Relative paths are resolved against the current agent directory. Defaults to /home/koushik/MANGA."
   })),
   seedTimeMinutes: Type.Optional(Type.Number({
     description: "How long aria2c should seed after the download completes. Defaults to 0."
@@ -22,7 +22,7 @@ const downloadTorrentSchema = Type.Object({
 
 type DownloadTorrentParams = Static<typeof downloadTorrentSchema>;
 
-export const defaultTorrentDownloadDirectory = "/home/koushikk/MANGA";
+export const defaultTorrentDownloadDirectory = "/home/koushik/MANGA";
 
 export type DownloadTorrentResult = {
   uri: string;
