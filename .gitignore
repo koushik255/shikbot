@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+.npmrc
+
+# Local Pi/Codex auth, usage, sessions, caches
+.pi-auth.json
+.pi-usage.json
+.pi-*.json
+.codex/
+.agents/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local databases / runtime state
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.pid
+*.seed
+
+# Test/cache output
+coverage/
+.nyc_output/
+.cache/
+.tmp/
+tmp/
+temp/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
