@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type, type Static } from "@mariozechner/pi-ai";
-import { resolveFromCwd, textResult, type SessionToolState } from "./shared.js";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
+import { defineTool, resolveFromCwd, textResult, type SessionToolState } from "./shared.js";
 
 const changeDirectorySchema = Type.Object({
   relativePath: Type.String({
@@ -9,17 +9,15 @@ const changeDirectorySchema = Type.Object({
   })
 });
 
-type ChangeDirectoryParams = Static<typeof changeDirectorySchema>;
-
 export function createChangeDirectoryTool(state: SessionToolState): AgentTool {
-  return {
+  return defineTool({
     name: "change_directory",
     label: "Change directory",
     description: "Change the agent's current directory. Supports paths like src, .., ../other-project, and absolute paths.",
     parameters: changeDirectorySchema,
-    execute: async (_toolCallId, params) => {
-      const input = params as ChangeDirectoryParams;
-      const target = resolveFromCwd(state.cwd, input.relativePath);
+    executionMode: "sequential",
+    execute: async ({ relativePath }) => {
+      const target = resolveFromCwd(state.cwd, relativePath);
       const targetStat = await stat(target);
 
       if (!targetStat.isDirectory()) {
@@ -28,7 +26,6 @@ export function createChangeDirectoryTool(state: SessionToolState): AgentTool {
 
       state.cwd = target;
       return textResult(`Current directory changed to ${state.cwd}`);
-    },
-    executionMode: "sequential"
-  };
+    }
+  });
 }

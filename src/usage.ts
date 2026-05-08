@@ -1,56 +1,102 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Usage } from "@mariozechner/pi-ai";
+import { resolve } from "node:path";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import { createJsonStore } from "./json-store.js";
 
+/** Aggregate usage record kept on disk. */
 export type UsageTotals = Usage & {
   requests: number;
 };
 
+/** Shape of `.pi-usage.json`. */
 export type UsageFile = {
   totals: UsageTotals;
   byProvider: Record<string, UsageTotals>;
   byModel: Record<string, UsageTotals>;
 };
 
-export const usagePath = resolve(process.env.PI_USAGE_FILE ?? ".pi-usage.json");
+const TOP_MODELS_LIMIT = 5;
 
-const emptyUsage: UsageTotals = {
-  requests: 0,
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: {
+export const usagePath = resolve(process.env["PI_USAGE_FILE"] ?? ".pi-usage.json");
+
+const usageStore = createJsonStore<UsageFile>({
+  path: usagePath,
+  defaults: createEmptyUsageFile,
+  mode: 0o644
+});
+
+export function loadUsage(): UsageFile {
+  return usageStore.load();
+}
+
+export function saveUsage(usage: UsageFile): void {
+  usageStore.save(usage);
+}
+
+/**
+ * Add `message`'s usage to the on-disk totals (overall + per-provider +
+ * per-model). No-op for non-assistant messages.
+ */
+export function recordUsageFromMessage(message: AgentMessage): void {
+  if (!isAssistantMessage(message)) return;
+
+  const file = loadUsage();
+  const modelKey = `${message.provider}/${message.model}`;
+
+  addUsage(file.totals, message.usage);
+  addUsage(getOrCreateBucket(file.byProvider, message.provider), message.usage);
+  addUsage(getOrCreateBucket(file.byModel, modelKey), message.usage);
+
+  saveUsage(file);
+}
+
+export function formatUsageReport(provider?: string): string {
+  const usage = loadUsage();
+  const sections = [formatTotals("Bot-tracked usage", usage.totals)];
+
+  const providerTotals = provider ? usage.byProvider[provider] : undefined;
+  if (provider && providerTotals) {
+    sections.push(formatTotals(`Provider ${provider}`, providerTotals));
+  }
+
+  const topModels = Object.entries(usage.byModel)
+    .sort(([, a], [, b]) => b.totalTokens - a.totalTokens)
+    .slice(0, TOP_MODELS_LIMIT);
+
+  if (topModels.length > 0) {
+    sections.push([
+      "Top models:",
+      ...topModels.map(([model, totals]) =>
+        `  ${model}: ${formatNumber(totals.totalTokens)} tokens, ${formatCost(totals.cost.total)}`
+      )
+    ].join("\n"));
+  }
+
+  return `${sections.join("\n\n")}\n\nNote: this only tracks usage from this Telegram bot, not your whole Codex account.`;
+}
+
+function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
+  return message.role === "assistant" && "usage" in message;
+}
+
+function createEmptyUsage(): UsageTotals {
+  return {
+    requests: 0,
     input: 0,
     output: 0,
     cacheRead: 0,
     cacheWrite: 0,
-    total: 0
-  }
-};
-
-function createUsageFile(): UsageFile {
-  return {
-    totals: structuredClone(emptyUsage),
-    byProvider: {},
-    byModel: {}
+    totalTokens: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
   };
 }
 
-export function loadUsage(): UsageFile {
-  if (!existsSync(usagePath)) {
-    return createUsageFile();
-  }
-
-  return JSON.parse(readFileSync(usagePath, "utf8")) as UsageFile;
+function createEmptyUsageFile(): UsageFile {
+  return { totals: createEmptyUsage(), byProvider: {}, byModel: {} };
 }
 
-export function saveUsage(usage: UsageFile): void {
-  mkdirSync(dirname(usagePath), { recursive: true });
-  writeFileSync(usagePath, `${JSON.stringify(usage, null, 2)}\n`);
+function getOrCreateBucket(record: Record<string, UsageTotals>, key: string): UsageTotals {
+  return (record[key] ??= createEmptyUsage());
 }
 
 function addUsage(total: UsageTotals, usage: Usage): void {
@@ -65,28 +111,6 @@ function addUsage(total: UsageTotals, usage: Usage): void {
   total.cost.cacheRead += usage.cost.cacheRead;
   total.cost.cacheWrite += usage.cost.cacheWrite;
   total.cost.total += usage.cost.total;
-}
-
-function isAssistantMessage(message: AgentMessage): message is AssistantMessage {
-  return message.role === "assistant" && "usage" in message;
-}
-
-export function recordUsageFromMessage(message: AgentMessage): void {
-  if (!isAssistantMessage(message)) {
-    return;
-  }
-
-  const usageFile = loadUsage();
-  addUsage(usageFile.totals, message.usage);
-
-  usageFile.byProvider[message.provider] ??= structuredClone(emptyUsage);
-  addUsage(usageFile.byProvider[message.provider], message.usage);
-
-  const modelKey = `${message.provider}/${message.model}`;
-  usageFile.byModel[modelKey] ??= structuredClone(emptyUsage);
-  addUsage(usageFile.byModel[modelKey], message.usage);
-
-  saveUsage(usageFile);
 }
 
 function formatNumber(value: number): string {
@@ -108,28 +132,4 @@ function formatTotals(label: string, totals: UsageTotals): string {
     `  Total tokens: ${formatNumber(totals.totalTokens)}`,
     `  Estimated cost: ${formatCost(totals.cost.total)}`
   ].join("\n");
-}
-
-export function formatUsageReport(provider?: string): string {
-  const usage = loadUsage();
-  const sections = [formatTotals("Bot-tracked usage", usage.totals)];
-
-  if (provider && usage.byProvider[provider]) {
-    sections.push(formatTotals(`Provider ${provider}`, usage.byProvider[provider]));
-  }
-
-  const models = Object.entries(usage.byModel)
-    .sort(([, a], [, b]) => b.totalTokens - a.totalTokens)
-    .slice(0, 5);
-
-  if (models.length > 0) {
-    sections.push([
-      "Top models:",
-      ...models.map(([model, totals]) =>
-        `  ${model}: ${formatNumber(totals.totalTokens)} tokens, ${formatCost(totals.cost.total)}`
-      )
-    ].join("\n"));
-  }
-
-  return `${sections.join("\n\n")}\n\nNote: this only tracks usage from this Telegram bot, not your whole Codex account.`;
 }

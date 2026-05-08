@@ -1,4 +1,4 @@
-import { Telegraf } from "telegraf";
+import { Telegraf, type Context } from "telegraf";
 import { message } from "telegraf/filters";
 import { askAgent, resetAgent } from "./agent.js";
 import { resolveApprovalFromText, setApprovalNotifier } from "./approvals.js";
@@ -7,24 +7,43 @@ import { formatCodexAccountUsageReport } from "./codex-account.js";
 import { downloadTorrent, formatDownloadTorrentResult } from "./tools/download-torrent.js";
 import { formatUsageReport } from "./usage.js";
 
+const TELEGRAM_MAX_MESSAGE_LENGTH = 3_900;
+
+const START_MESSAGE =
+  "Pi core agent bot is online. Send a message, use /ask <prompt>, /torrent <magnet-or-torrent-url>, /usage, or /reset.";
+const TORRENT_USAGE = "Usage: /torrent <magnet link | .torrent URL | local .torrent path>";
+const ASK_USAGE = "Usage: /ask <message>";
+const NO_PENDING_APPROVAL = "No pending approval for this chat.";
+
 export function isAllowedUser(userId: number | undefined): boolean {
   return typeof userId === "number" && config.ownerTelegramIds.has(userId);
 }
 
+/** Send `text` to Telegram, splitting it across messages to fit the API limit. */
 export async function replyInChunks(reply: (text: string) => Promise<unknown>, text: string): Promise<void> {
-  const maxLength = 3900;
-
-  for (let i = 0; i < text.length; i += maxLength) {
-    await reply(text.slice(i, i + maxLength));
+  for (let i = 0; i < text.length; i += TELEGRAM_MAX_MESSAGE_LENGTH) {
+    await reply(text.slice(i, i + TELEGRAM_MAX_MESSAGE_LENGTH));
   }
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function replyChunked(ctx: Context, text: string): Promise<void> {
+  return replyInChunks((chunk) => ctx.reply(chunk), text);
+}
+
+function capitalize<T extends string>(value: T): Capitalize<T> {
+  return (value.charAt(0).toUpperCase() + value.slice(1)) as Capitalize<T>;
 }
 
 export function createTelegramBot(): Telegraf {
   const bot = new Telegraf(config.telegramBotToken);
 
-  setApprovalNotifier(async (chatId, approvalMessage) => {
-    await replyInChunks((text) => bot.telegram.sendMessage(chatId, text), approvalMessage);
-  });
+  setApprovalNotifier((chatId, approvalMessage) =>
+    replyInChunks((text) => bot.telegram.sendMessage(chatId, text), approvalMessage)
+  );
 
   bot.use(async (ctx, next) => {
     if (!isAllowedUser(ctx.from?.id)) {
@@ -36,13 +55,10 @@ export function createTelegramBot(): Telegraf {
       await ctx.reply("Unauthorized.");
       return;
     }
-
     await next();
   });
 
-  bot.start(async (ctx) => {
-    await ctx.reply("Pi core agent bot is online. Send a message, use /ask <prompt>, /torrent <magnet-or-torrent-url>, /usage, or /reset.");
-  });
+  bot.start((ctx) => ctx.reply(START_MESSAGE));
 
   bot.command("reset", async (ctx) => {
     resetAgent(ctx.chat.id);
@@ -51,25 +67,24 @@ export function createTelegramBot(): Telegraf {
 
   bot.command("usage", async (ctx) => {
     await ctx.sendChatAction("typing");
+    const localUsage = formatUsageReport(config.piProvider);
 
     try {
       const accountUsage = await formatCodexAccountUsageReport();
-      const localUsage = formatUsageReport(config.piProvider);
-      await replyInChunks((text) => ctx.reply(text), `${accountUsage}\n\n${localUsage}`);
+      await replyChunked(ctx, `${accountUsage}\n\n${localUsage}`);
     } catch (error) {
       console.error("Failed to read Codex account usage:", error);
-      await replyInChunks(
-        (text) => ctx.reply(text),
-        `Could not read Codex account usage.\n\n${error instanceof Error ? error.message : String(error)}\n\n${formatUsageReport(config.piProvider)}`
+      await replyChunked(
+        ctx,
+        `Could not read Codex account usage.\n\n${describeError(error)}\n\n${localUsage}`
       );
     }
   });
 
   bot.command("torrent", async (ctx) => {
-    const uri = ctx.message.text.replace(/^\/torrent(@\w+)?\s*/u, "").trim();
-
+    const uri = ctx.payload.trim();
     if (!uri) {
-      await ctx.reply("Usage: /torrent <magnet link | .torrent URL | local .torrent path>");
+      await ctx.reply(TORRENT_USAGE);
       return;
     }
 
@@ -78,48 +93,44 @@ export function createTelegramBot(): Telegraf {
 
     try {
       const result = await downloadTorrent({ uri, cwd: process.cwd() });
-      await replyInChunks((text) => ctx.reply(text), formatDownloadTorrentResult(result));
+      await replyChunked(ctx, formatDownloadTorrentResult(result));
     } catch (error) {
-      await replyInChunks(
-        (text) => ctx.reply(text),
-        `Torrent download failed:\n${error instanceof Error ? error.message : String(error)}`
-      );
+      await replyChunked(ctx, `Torrent download failed:\n${describeError(error)}`);
     }
   });
 
   bot.command("yes", async (ctx) => {
     const decision = resolveApprovalFromText(ctx.chat.id, "/yes");
-    await ctx.reply(decision === "approved" ? "Approved." : "No pending approval for this chat.");
+    await ctx.reply(decision === "approved" ? "Approved." : NO_PENDING_APPROVAL);
   });
 
   bot.command("no", async (ctx) => {
     const decision = resolveApprovalFromText(ctx.chat.id, "/no");
-    await ctx.reply(decision === "denied" ? "Denied." : "No pending approval for this chat.");
+    await ctx.reply(decision === "denied" ? "Denied." : NO_PENDING_APPROVAL);
   });
 
   bot.command("ask", async (ctx) => {
-    const prompt = ctx.message.text.replace(/^\/ask(@\w+)?\s*/u, "").trim();
-
+    const prompt = ctx.payload.trim();
     if (!prompt) {
-      await ctx.reply("Usage: /ask <message>");
+      await ctx.reply(ASK_USAGE);
       return;
     }
 
     await ctx.sendChatAction("typing");
     const response = await askAgent(ctx.chat.id, prompt);
-    await replyInChunks((text) => ctx.reply(text), response);
+    await replyChunked(ctx, response);
   });
 
   bot.on(message("text"), async (ctx) => {
-    const approvalDecision = resolveApprovalFromText(ctx.chat.id, ctx.message.text);
-    if (approvalDecision) {
-      await ctx.reply(approvalDecision === "approved" ? "Approved." : "Denied.");
+    const decision = resolveApprovalFromText(ctx.chat.id, ctx.message.text);
+    if (decision) {
+      await ctx.reply(`${capitalize(decision)}.`);
       return;
     }
 
     await ctx.sendChatAction("typing");
     const response = await askAgent(ctx.chat.id, ctx.message.text);
-    await replyInChunks((text) => ctx.reply(text), response);
+    await replyChunked(ctx, response);
   });
 
   bot.catch((error) => {

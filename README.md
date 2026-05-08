@@ -25,7 +25,7 @@ npm run dev
 
 ## Codex OAuth
 
-This project uses the same `@mariozechner/pi-ai` OAuth helper that pi uses. Login once from the server shell:
+This project uses the same `@earendil-works/pi-ai` OAuth helper that pi uses. Login once from the server shell:
 
 ```bash
 npm run login:codex
@@ -57,9 +57,8 @@ Each Telegram chat gets its own agent session and current directory. The current
 The bot should stay server-native and tool-driven:
 
 - Telegram is the control surface.
-- `@mariozechner/pi-agent-core` is the stateful agent loop.
-- `@mariozechner/pi-ai` provides provider/model integration.
+- `@earendil-works/pi-agent-core` is the stateful agent loop.
+- `@earendil-works/pi-ai` provides provider/model integration.
 - This service owns permissions, state, tool execution, and progress updates.
 - Tools should be explicit TypeScript functions with schemas.
 - Risky actions should require a separate approval flow before execution.
-# shikbot

@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const tempDir = mkdtempSync(join(tmpdir(), "telegram-agent-bot-test-"));
-process.env.PI_AUTH_FILE = join(tempDir, "auth.json");
-process.env.PI_USAGE_FILE = join(tempDir, "usage.json");
-process.env.TELEGRAM_BOT_TOKEN = "test-token";
-process.env.OWNER_TELEGRAM_IDS = "123,456";
-process.env.PI_PROVIDER = "openai";
-process.env.PI_MODEL = "gpt-5-mini";
-process.env.PI_THINKING_LEVEL = "medium";
+process.env["PI_AUTH_FILE"] = join(tempDir, "auth.json");
+process.env["PI_USAGE_FILE"] = join(tempDir, "usage.json");
+process.env["TELEGRAM_BOT_TOKEN"] = "test-token";
+process.env["OWNER_TELEGRAM_IDS"] = "123,456";
+process.env["PI_PROVIDER"] = "openai";
+process.env["PI_MODEL"] = "gpt-5-mini";
+process.env["PI_THINKING_LEVEL"] = "medium";
 
 const approvals = await import("./approvals.js");
 const auth = await import("./auth.js");
@@ -43,12 +43,12 @@ test("saveAuth/loadAuth round-trips OAuth credentials", () => {
 });
 
 test("getProviderApiKey prefers environment API keys", async () => {
-  process.env.OPENAI_API_KEY = "sk-test-env-key";
+  process.env["OPENAI_API_KEY"] = "sk-test-env-key";
 
   const key = await auth.getProviderApiKey("openai");
 
   assert.equal(key, "sk-test-env-key");
-  delete process.env.OPENAI_API_KEY;
+  delete process.env["OPENAI_API_KEY"];
 });
 
 test("recordUsageFromMessage tracks assistant usage", () => {

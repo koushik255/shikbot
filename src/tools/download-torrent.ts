@@ -1,206 +1,163 @@
 import { mkdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type, type Static } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "@earendil-works/pi-ai";
 import { requestCommandApproval } from "../approvals.js";
-import { resolveFromCwd, textResult, type SessionToolState } from "./shared.js";
+import { formatProcessResult, runProcess, type ProcessResult } from "../process.js";
+import { defineTool, resolveFromCwd, textResult, type SessionToolState } from "./shared.js";
+
+export const defaultTorrentDownloadDirectory = "/home/koushik/MANGA";
+
+const DEFAULT_TIMEOUT_MINUTES = 120;
+const MAX_TIMEOUT_MINUTES = 1_440;
+const MAX_SEED_TIME_MINUTES = 10_080;
+
+const ARIA2C_FLAGS = ["--summary-interval=30", "--console-log-level=notice"] as const;
 
 const downloadTorrentSchema = Type.Object({
   uri: Type.String({
     description: "Magnet URI, local .torrent path, or http(s) URL to a .torrent file. Only use for content the user has rights to download."
   }),
   outputDirectory: Type.Optional(Type.String({
-    description: "Directory to save files into. Relative paths are resolved against the current agent directory. Defaults to /home/koushik/MANGA."
+    description: `Directory to save files into. Relative paths are resolved against the current agent directory. Defaults to ${defaultTorrentDownloadDirectory}.`
   })),
   seedTimeMinutes: Type.Optional(Type.Number({
     description: "How long aria2c should seed after the download completes. Defaults to 0."
   })),
   timeoutMinutes: Type.Optional(Type.Number({
-    description: "Maximum time to let aria2c run. Defaults to 120 minutes and is capped at 1440 minutes."
+    description: `Maximum time to let aria2c run. Defaults to ${DEFAULT_TIMEOUT_MINUTES} minutes and is capped at ${MAX_TIMEOUT_MINUTES} minutes.`
   }))
 });
 
-type DownloadTorrentParams = Static<typeof downloadTorrentSchema>;
-
-export const defaultTorrentDownloadDirectory = "/home/koushik/MANGA";
-
-export type DownloadTorrentResult = {
+export type DownloadTorrentResult = ProcessResult & {
   uri: string;
   outputDirectory: string;
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
 };
 
-const maxOutputChars = 24_000;
-
-function truncateOutput(text: string): string {
-  if (text.length <= maxOutputChars) return text;
-  return `${text.slice(0, maxOutputChars)}\n\n[output truncated after ${maxOutputChars} characters]`;
-}
+type DownloadTorrentDetails =
+  | ({ kind: "downloaded" } & DownloadTorrentResult)
+  | { kind: "denied"; uri: string };
 
 export function validateTorrentUri(uri: string): void {
   if (uri.startsWith("magnet:?xt=urn:btih:")) return;
-
   if (uri.endsWith(".torrent")) return;
 
   try {
     const parsed = new URL(uri);
-    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.pathname.endsWith(".torrent")) {
-      return;
-    }
+    const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+    if (isHttp && parsed.pathname.endsWith(".torrent")) return;
   } catch {
-    // Local paths are accepted only when they end in .torrent, handled above.
+    // Not a URL: fall through. Local paths must end in .torrent (handled above).
   }
 
   throw new Error("Torrent URI must be a magnet link, a .torrent URL, or a local .torrent path.");
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
 }
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function buildPreviewCommand(uri: string, outputDirectory: string, seedTimeMinutes: number): string {
+function buildAria2Args(uri: string, outputDirectory: string, seedTimeMinutes: number): string[] {
+  return [
+    "--dir", outputDirectory,
+    "--seed-time", String(seedTimeMinutes),
+    ...ARIA2C_FLAGS,
+    uri
+  ];
+}
+
+function buildAria2Preview(uri: string, outputDirectory: string, seedTimeMinutes: number): string {
   return [
     "aria2c",
-    "--dir",
-    shellQuote(outputDirectory),
-    "--seed-time",
-    String(seedTimeMinutes),
-    "--summary-interval=30",
-    "--console-log-level=notice",
+    "--dir", shellQuote(outputDirectory),
+    "--seed-time", String(seedTimeMinutes),
+    ...ARIA2C_FLAGS,
     shellQuote(uri)
   ].join(" ");
 }
 
-async function runAria2c(
-  uri: string,
-  outputDirectory: string,
-  seedTimeMinutes: number,
-  timeoutMinutes: number,
-  signal?: AbortSignal
-): Promise<DownloadTorrentResult> {
-  const args = [
-    "--dir",
-    outputDirectory,
-    "--seed-time",
-    String(seedTimeMinutes),
-    "--summary-interval=30",
-    "--console-log-level=notice",
-    uri
-  ];
-
-  const child = spawn("aria2c", args, {
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  let stdout = "";
-  let stderr = "";
-  let timedOut = false;
-
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGTERM");
-    setTimeout(() => {
-      if (!child.killed) child.kill("SIGKILL");
-    }, 1_000).unref();
-  }, timeoutMinutes * 60 * 1000);
-
-  const abort = () => child.kill("SIGTERM");
-  signal?.addEventListener("abort", abort, { once: true });
-
-  return await new Promise((resolve, reject) => {
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout = truncateOutput(stdout + chunk.toString("utf8"));
-    });
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = truncateOutput(stderr + chunk.toString("utf8"));
-    });
-
-    child.on("error", reject);
-
-    child.on("close", (exitCode) => {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-      resolve({ uri, outputDirectory, exitCode, stdout, stderr, timedOut });
-    });
-  });
+function resolveOutputDirectory(input: string | undefined, cwd: string): string {
+  return input ? resolveFromCwd(cwd, input) : defaultTorrentDownloadDirectory;
 }
 
-export function formatDownloadTorrentResult(result: DownloadTorrentResult): string {
-  return [
-    "Torrent download finished.",
-    `URI: ${result.uri}`,
-    `Output directory: ${result.outputDirectory}`,
-    `Exit code: ${result.exitCode ?? "unknown"}${result.timedOut ? " (timed out)" : ""}`,
-    "",
-    "stdout:",
-    result.stdout || "(empty)",
-    "",
-    "stderr:",
-    result.stderr || "(empty)"
-  ].join("\n");
-}
-
-export async function downloadTorrent(input: {
+type DownloadTorrentInput = {
   uri: string;
   outputDirectory?: string;
   seedTimeMinutes?: number;
   timeoutMinutes?: number;
   cwd?: string;
   signal?: AbortSignal;
-}): Promise<DownloadTorrentResult> {
+};
+
+export async function downloadTorrent(input: DownloadTorrentInput): Promise<DownloadTorrentResult> {
   validateTorrentUri(input.uri);
 
-  const outputDirectory = input.outputDirectory
-    ? resolveFromCwd(input.cwd ?? process.cwd(), input.outputDirectory)
-    : defaultTorrentDownloadDirectory;
-  const seedTimeMinutes = Math.max(0, Math.min(input.seedTimeMinutes ?? 0, 10_080));
-  const timeoutMinutes = Math.max(1, Math.min(input.timeoutMinutes ?? 120, 1_440));
+  const outputDirectory = resolveOutputDirectory(input.outputDirectory, input.cwd ?? process.cwd());
+  const seedTimeMinutes = clamp(input.seedTimeMinutes ?? 0, 0, MAX_SEED_TIME_MINUTES);
+  const timeoutMinutes = clamp(input.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES, 1, MAX_TIMEOUT_MINUTES);
 
   await mkdir(outputDirectory, { recursive: true });
-  return await runAria2c(input.uri, outputDirectory, seedTimeMinutes, timeoutMinutes, input.signal);
+
+  const processResult = await runProcess(
+    "aria2c",
+    buildAria2Args(input.uri, outputDirectory, seedTimeMinutes),
+    {
+      timeoutMs: timeoutMinutes * 60 * 1000,
+      signal: input.signal
+    }
+  );
+
+  return { ...processResult, uri: input.uri, outputDirectory };
+}
+
+export function formatDownloadTorrentResult(result: DownloadTorrentResult): string {
+  return formatProcessResult(result, [
+    "Torrent download finished.",
+    `URI: ${result.uri}`,
+    `Output directory: ${result.outputDirectory}`
+  ]);
 }
 
 export function createDownloadTorrentTool(state: SessionToolState): AgentTool {
-  return {
+  return defineTool({
     name: "download_torrent",
     label: "Download torrent",
     description:
       "Download a user-provided magnet link or .torrent file using aria2c after explicit user approval. Only use for content the user has rights to download.",
     parameters: downloadTorrentSchema,
-    execute: async (_toolCallId, params, signal) => {
-      const input = params as DownloadTorrentParams;
-      validateTorrentUri(input.uri);
+    executionMode: "sequential",
+    execute: async (params, { signal }) => {
+      validateTorrentUri(params.uri);
 
-      const outputDirectory = input.outputDirectory
-        ? resolveFromCwd(state.cwd, input.outputDirectory)
-        : defaultTorrentDownloadDirectory;
-      const seedTimeMinutes = Math.max(0, Math.min(input.seedTimeMinutes ?? 0, 10_080));
-      const timeoutMinutes = Math.max(1, Math.min(input.timeoutMinutes ?? 120, 1_440));
-      const preview = buildPreviewCommand(input.uri, outputDirectory, seedTimeMinutes);
+      const outputDirectory = resolveOutputDirectory(params.outputDirectory, state.cwd);
+      const seedTimeMinutes = clamp(params.seedTimeMinutes ?? 0, 0, MAX_SEED_TIME_MINUTES);
+      const timeoutMinutes = clamp(params.timeoutMinutes ?? DEFAULT_TIMEOUT_MINUTES, 1, MAX_TIMEOUT_MINUTES);
+      const preview = buildAria2Preview(params.uri, outputDirectory, seedTimeMinutes);
 
       const approved = await requestCommandApproval(state.chatId, preview, state.cwd);
       if (!approved) {
-        return textResult(`User denied torrent download: ${input.uri}`);
+        return textResult<DownloadTorrentDetails>(
+          `User denied torrent download: ${params.uri}`,
+          { kind: "denied", uri: params.uri }
+        );
       }
 
       const result = await downloadTorrent({
-        uri: input.uri,
-        outputDirectory: input.outputDirectory,
+        uri: params.uri,
+        outputDirectory: params.outputDirectory,
         seedTimeMinutes,
         timeoutMinutes,
         cwd: state.cwd,
         signal
       });
 
-      return {
-        ...textResult(formatDownloadTorrentResult(result)),
-        details: result
-      };
-    },
-    executionMode: "sequential"
-  };
+      return textResult<DownloadTorrentDetails>(
+        formatDownloadTorrentResult(result),
+        { kind: "downloaded", ...result }
+      );
+    }
+  });
 }

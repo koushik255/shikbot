@@ -1,80 +1,116 @@
+/**
+ * Per-chat approval flow used by the `execute_command` and `download_torrent`
+ * tools. The agent calls `requestCommandApproval` and awaits a yes/no decision
+ * delivered by the Telegram side via `resolveApprovalFromText`.
+ */
+
 export type ApprovalDecision = "approved" | "denied";
 
 type PendingApproval = {
   id: string;
-  chatId: number;
   command: string;
   cwd: string;
   resolve: (approved: boolean) => void;
   timeout: NodeJS.Timeout;
 };
 
-type ApprovalNotifier = (chatId: number, message: string) => Promise<void> | void;
+/** Sends the approval prompt to the user (typically via Telegram). */
+type AppovalNotifier = (
+  chatId: number,
+  message: string,
+) => Promise<void> | void;
 
-const pendingByChat = new Map<number, PendingApproval>();
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+const YES_INPUTS = new Set(["yes", "y", "/yes"]);
+const NO_INPUTS = new Set(["no", "n", "/no"]);
+
+const pendingByChatId = new Map<number, PendingApproval>();
 let notifier: ApprovalNotifier | undefined;
 let nextApprovalId = 1;
 
-export function setApprovalNotifier(nextNotifier: ApprovalNotifier): void {
-  notifier = nextNotifier;
+export function setApprovalNotifier(next: ApprovalNotifier): void {
+  notifier = next;
 }
 
-export async function requestCommandApproval(chatId: number, command: string, cwd: string): Promise<boolean> {
-  const existing = pendingByChat.get(chatId);
-  if (existing) {
-    existing.resolve(false);
-    clearTimeout(existing.timeout);
-    pendingByChat.delete(chatId);
-  }
+/**
+ * Request approval for `command` from the user owning `chatId`.
+ *
+ * Resolves to `true` when the user approves, `false` on denial or timeout.
+ * Any previously pending approval for the same chat is treated as denied.
+ */
+export function requestCommandApproval(
+  chatId: number,
+  command: string,
+  cwd: string,
+): Promise<boolean> {
+  resolvePending(chatId, false);
 
   const id = String(nextApprovalId++);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
 
-  return await new Promise<boolean>((resolve) => {
-    const timeout = setTimeout(() => {
-      pendingByChat.delete(chatId);
-      resolve(false);
-    }, 5 * 60 * 1000);
+  const timeout = setTimeout(() => {
+    pendingByChatId.delete(chatId);
+    resolve(false);
+  }, APPROVAL_TIMEOUT_MS);
 
-    const pending: PendingApproval = { id, chatId, command, cwd, resolve, timeout };
-    pendingByChat.set(chatId, pending);
+  pendingByChatId.set(chatId, { id, command, cwd, resolve, timeout });
+  void notifier?.(chatId, buildApprovalMessage(id, command, cwd));
 
-    const message = [
-      "Command approval requested:",
-      "",
-      `ID: ${id}`,
-      `Directory: ${cwd}`,
-      "Command:",
-      "```",
-      command,
-      "```",
-      "",
-      "Reply `yes` to approve or `no` to deny. You can also use /yes or /no."
-    ].join("\n");
-
-    void notifier?.(chatId, message);
-  });
+  return promise;
 }
 
-export function resolveApprovalFromText(chatId: number, text: string): ApprovalDecision | undefined {
-  const normalized = text.trim().toLowerCase();
-  const isYes = normalized === "yes" || normalized === "y" || normalized === "/yes";
-  const isNo = normalized === "no" || normalized === "n" || normalized === "/no";
+/**
+ * Apply a yes/no `text` from the user to the chat's pending approval.
+ *
+ * Returns `undefined` if the text isn't a yes/no answer, or if there is no
+ * pending approval for the chat.
+ */
+export function resolveApprovalFromText(
+  chatId: number,
+  text: string,
+): ApprovalDecision | undefined {
+  const decision = parseDecision(text);
+  if (!decision) return undefined;
+  if (!pendingByChatId.has(chatId)) return undefined;
 
-  if (!isYes && !isNo) {
-    return undefined;
-  }
-
-  const pending = pendingByChat.get(chatId);
-  if (!pending) {
-    return undefined;
-  }
-
-  clearTimeout(pending.timeout);
-  pendingByChat.delete(chatId);
-  pending.resolve(isYes);
-  return isYes ? "approved" : "denied";
+  resolvePending(chatId, decision === "approved");
+  return decision;
 }
 
 export function hasPendingApproval(chatId: number): boolean {
-  return pendingByChat.has(chatId);
+  return pendingByChatId.has(chatId);
+}
+
+function parseDecision(text: string): ApprovalDecision | undefined {
+  const normalized = text.trim().toLowerCase();
+  if (YES_INPUTS.has(normalized)) return "approved";
+  if (NO_INPUTS.has(normalized)) return "denied";
+  return undefined;
+}
+
+function resolvePending(chatId: number, approved: boolean): void {
+  const pending = pendingByChatId.get(chatId);
+  if (!pending) return;
+  clearTimeout(pending.timeout);
+  pendingByChatId.delete(chatId);
+  pending.resolve(approved);
+}
+
+function buildApprovalMessage(
+  id: string,
+  command: string,
+  cwd: string,
+): string {
+  return [
+    "Command approval requested:",
+    "",
+    `ID: ${id}`,
+    `Directory: ${cwd}`,
+    "Command:",
+    "```",
+    command,
+    "```",
+    "",
+    "Reply `yes` to approve or `no` to deny. You can also use /yes or /no.",
+  ].join("\n");
 }

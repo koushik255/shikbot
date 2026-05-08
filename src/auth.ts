@@ -1,24 +1,23 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
-import { getEnvApiKey } from "@mariozechner/pi-ai";
-import { getOAuthApiKey, type OAuthCredentials } from "@mariozechner/pi-ai/oauth";
+import { resolve } from "node:path";
+import { getEnvApiKey } from "@earendil-works/pi-ai";
+import { getOAuthApiKey, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
+import { createJsonStore } from "./json-store.js";
 
 export type AuthFile = Record<string, OAuthCredentials & { type?: "oauth" }>;
 
-export const authPath = resolve(process.env.PI_AUTH_FILE ?? ".pi-auth.json");
+export const authPath = resolve(process.env["PI_AUTH_FILE"] ?? ".pi-auth.json");
+
+const authStore = createJsonStore<AuthFile>({
+  path: authPath,
+  defaults: () => ({})
+});
 
 export function loadAuth(): AuthFile {
-  if (!existsSync(authPath)) {
-    return {};
-  }
-
-  return JSON.parse(readFileSync(authPath, "utf8")) as AuthFile;
+  return authStore.load();
 }
 
 export function saveAuth(auth: AuthFile): void {
-  mkdirSync(dirname(authPath), { recursive: true });
-  writeFileSync(authPath, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+  authStore.save(auth);
 }
 
 export async function getProviderApiKey(provider: string): Promise<string | undefined> {

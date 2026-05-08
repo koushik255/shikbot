@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createChangeDirectoryTool } from "./change-directory.js";
 import { createDownloadTorrentTool } from "./download-torrent.js";
 import { createExecuteCommandTool } from "./execute-command.js";
